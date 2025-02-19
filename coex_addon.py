@@ -23,6 +23,8 @@ bl_info = {
     "category": "DroneShow",
 }
 
+PRINT_LOGS = True
+
 
 class ExportCsv(Operator, ExportHelper):
     bl_idname = "export_animation.folder"
@@ -33,36 +35,63 @@ class ExportCsv(Operator, ExportHelper):
     # Элементы GUI
     # region
     use_nameFilter: BoolProperty(
-        name="Использование фильтра для объектов",
+        name="Filter",
+        description="Использование фильтра для объектов",
         default=False,
-    )
+    )  # type: ignore
 
     drones_name: StringProperty(
-        name="Идентификатор имени",
+        name="Name identifier",
         description="Идентификатор имени для всех дронов",
-        default="drone",
-    )
+        default="",
+    )  # type: ignore
 
     show_warnings: BoolProperty(
         name="Показывать подробные анимационные предупреждения",
         default=False,
-    )
+    )  # type: ignore
 
     speed_warning_limit: FloatProperty(
         name="Speed limit",
         description="Limit of drone movement speed (m/s)",
         unit="VELOCITY",
-        default=3,
+        default=2,
         min=0,
-    )
+    )  # type: ignore
 
     drone_distance_limit: FloatProperty(
         name="Distance limit",
         description="Closest possible distance between drones (m)",
         unit="LENGTH",
-        default=1.5,
+        default=1,
         min=0,
-    )
+    )  # type: ignore
+
+    # Что нужно экспортировать
+
+    showFrame_number: BoolProperty(
+        name="FrameNumber",
+        description="Показывать номер кадра в выходном файле",
+        default=True,
+    )  # type: ignore
+
+    showXYZ: BoolProperty(
+        name="XYZ",
+        description="Показывать x, y, z в выходном файле",
+        default=True,
+    )  # type: ignore
+
+    showYAW: BoolProperty(
+        name="Yaw",
+        description="Показывать поворот относительно оси Z, хз зачем, но пусть будет",
+        default=False,
+    )  # type: ignore
+
+    showRGB: BoolProperty(
+        name="RGB",
+        description="Показывать цвета ф формате rgb [0 - 255] в выходном файле",
+        default=True,
+    )  # type: ignore
 
     # Окно проводника с вводом названия директории для выходных файлов
     filepath: StringProperty(
@@ -71,7 +100,8 @@ class ExportCsv(Operator, ExportHelper):
         maxlen=1024,
         subtype="DIR_PATH",
         default="",
-    )
+    )  # type: ignore
+
     # endregion
 
     def execute(self, context: bpy.types.Context) -> set[str]:
@@ -175,17 +205,33 @@ class ExportCsv(Operator, ExportHelper):
                                         ),
                                     )
 
-                    # Запись данных в csv-файл
-                    animation_file_writer.writerow(
-                        [
-                            str(frame_number),
-                            round(x, 5),
-                            round(y, 5),
-                            round(z, 5),
-                            # round(rot_z, 5),
-                            *rgb,
-                        ]
+                    # Запись данных в csv-файл с проверкой
+
+                    drone_data: tuple[
+                        tuple[int],
+                        tuple[float, float, float],
+                        tuple[float],
+                        tuple[int, int, int],
+                    ] = (
+                        (frame_number,),
+                        tuple(map(lambda x: round(x, 5), (x, y, z))),
+                        (round(rot_z, 5),),
+                        rgb,
                     )
+                    write_to_file = []
+
+                    for i, is_show in enumerate(
+                        (
+                            self.showFrame_number,
+                            self.showXYZ,
+                            self.showYAW,
+                            self.showRGB,
+                        )
+                    ):
+                        if is_show:
+                            write_to_file += drone_data[i]
+
+                    animation_file_writer.writerow(tuple(write_to_file))
 
                 # Вывод предупреждений и сообщение об успешном экспорте
                 if speed_exeeded:
@@ -214,8 +260,7 @@ def create_folder_if_not_exists(path: str) -> None:
         os.makedirs(path)
 
 
-# TODO: rewrite rgb, т. к. сделано в основном нейросетью
-def get_rgb_from_obj(obj: bpy.types.Object) -> tuple[int, int, int] | None:
+def get_rgb_from_obj(obj: bpy.types.Object) -> tuple[int, int, int]:
     """
     Получает цвет объекта на сцене Blender в формате RGB
 
@@ -223,76 +268,44 @@ def get_rgb_from_obj(obj: bpy.types.Object) -> tuple[int, int, int] | None:
         obj: Объект Blender
 
     Returns:
-        Кортеж (R, G, B) целых значений цвета в диапазоне [0, 255], или None, если объект не найден
-        или не имеет материала
+        Кортеж (R, G, B) целых значений цвета в диапазоне [0, 255]
     """
 
-    if obj.type != "MESH":
-        print(f"Объект '{obj.name}' не является мешем, невозможно получить цвет.")
-        return
-
-    if not obj.data.materials:
-        print(f"Объект '{obj.name}' не имеет привязанных материалов.")
-        return
-
-    mat = obj.data.materials[0]  # Берем первый материал, если их несколько
-
-    if mat.use_nodes:
-        # Используем ноды материала
-        node_tree = mat.node_tree
-        output_node = next(
-            (node for node in node_tree.nodes if node.type == "OUTPUT_MATERIAL"), None
-        )
-
-        if output_node:
-            shader_input = next(
-                (
-                    node_input
-                    for node_input in output_node.inputs
-                    if node_input.type == "SHADER"
-                ),
-                None,
+    def get_rgb() -> tuple[int, int, int]:
+        # Проверка правильности объекта
+        if obj.type != "MESH":
+            raise ValueError(
+                f"Объект '{obj.name}' не является мешем, невозможно получить цвет."
             )
-            if shader_input:
-                shader_node = shader_input.links[0].from_node
+        if not obj.data.materials:
+            raise ValueError(f"Объект '{obj.name}' не имеет привязанных материалов.")
 
-                if shader_node.type == "BSDF_PRINCIPLED":
-                    base_color_input = next(
-                        (
-                            node_input
-                            for node_input in shader_node.inputs
-                            if node_input.name == "Base Color"
-                        ),
-                        None,
-                    )
-                    if base_color_input:
-                        color = base_color_input.default_value[:3]
-                        rgb_color = tuple(
-                            int(c * 255) for c in color
-                        )  # Конвертация в RGB (0-255)
-                        return rgb_color
-                    else:
-                        print(
-                            f"Не найден вход 'Base Color' в шейдере принципиального BSDF для объекта '{obj.name}'."
-                        )
-                else:
-                    print(
-                        f"Первый вход шейдера не является 'Принципиальный BSDF' для объекта '{obj.name}'."
-                    )
-            else:
-                print(
-                    f"У выходного нода не найден вход шейдера для объекта '{obj.name}'."
-                )
-        else:
-            print(f"Не найден выходной нод материала для объекта '{obj.name}'.")
-    else:
-        # Используем цвет diffuse (если не ноды)
-        color = mat.diffuse_color[:3]
-        rgb_color = tuple(int(c * 255) for c in color)  # Конвертация в RGB (0-255)
-        print("Используются не ноды")
-        return rgb_color
+        mat = obj.data.materials[0]  # Берем первый материал, если их несколько
 
-    return
+        if not mat.use_nodes:
+            # print("Используются не ноды")
+            return (
+                int(c * 255)  # Конвертация в RGB (0-255)
+                for c in mat.diffuse_color[:3]  #
+            )
+
+        # TODO: обработку нод объекта
+        raise ValueError("Используются ноды")
+
+    try:
+        return get_rgb()
+    except ValueError as err:
+        if PRINT_LOGS:
+            print(
+                f"\033[31m[ValueError: from addon '{bl_info['name']}'] Не удалось получить цвет: {err}\033[0m"
+            )
+        return (0, 0, 0)
+    except:
+        if PRINT_LOGS:
+            print(
+                f"\033[31m[Error: from addon '{bl_info['name']}'] Не удалось получить цвет: {err}\033[0m"
+            )
+        return (0, 0, 0)
 
 
 def calc_speed(
