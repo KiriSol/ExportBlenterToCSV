@@ -7,3 +7,5 @@
 - Yaw: поворот по оси Z
 - RGB: diffuse_color объекта в формате r, g, b (от 0 до 255)
 
+За основу взят https://github.com/CopterExpress/clever-show/tree/master/blender-addon
+
